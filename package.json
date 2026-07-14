@@ -1,0 +1,17 @@
+{
+  "name": "grok-auth",
+  "version": "1.0.0",
+  "description": "Switch between multiple Grok CLI OIDC accounts when token usage runs out",
+  "type": "module",
+  "bin": {
+    "grok-auth": "./grok-auth.ts"
+  },
+  "scripts": {
+    "start": "bun run grok-auth.ts",
+    "typecheck": "bunx tsc --noEmit"
+  },
+  "engines": {
+    "bun": ">=1.0.0"
+  },
+  "license": "MIT"
+}
