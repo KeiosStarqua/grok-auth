@@ -4,14 +4,40 @@
   "description": "Switch between multiple Grok CLI OIDC accounts when token usage runs out",
   "type": "module",
   "bin": {
-    "grok-auth": "./grok-auth.ts"
+    "grok-auth": "./dist/grok-auth.js"
   },
+  "files": [
+    "dist"
+  ],
   "scripts": {
-    "start": "bun run grok-auth.ts",
-    "typecheck": "bunx tsc --noEmit"
+    "build": "tsc",
+    "prepublishOnly": "npm run build",
+    "start": "node dist/grok-auth.js",
+    "typecheck": "tsc --noEmit"
   },
   "engines": {
-    "bun": ">=1.0.0"
+    "node": ">=18"
   },
-  "license": "MIT"
+  "keywords": [
+    "grok",
+    "xai",
+    "cli",
+    "auth",
+    "oidc",
+    "accounts",
+    "profiles"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/KeiosStarqua/grok-auth.git"
+  },
+  "homepage": "https://github.com/KeiosStarqua/grok-auth#readme",
+  "bugs": {
+    "url": "https://github.com/KeiosStarqua/grok-auth/issues"
+  },
+  "license": "MIT",
+  "devDependencies": {
+    "@types/node": "^22.15.0",
+    "typescript": "^5.8.0"
+  }
 }

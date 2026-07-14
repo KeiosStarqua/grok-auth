@@ -6,14 +6,42 @@ Grok stores **one** OIDC session in `~/.grok/auth.json`. This tool snapshots tha
 
 ## Install
 
-Requires [Bun](https://bun.sh).
+Requires **Node.js 18+**. Install from npm with any Node-compatible package manager:
 
 ```bash
-git clone <this-repo> ~/repos/mein/grok-auth   # or your path
-chmod +x ~/repos/mein/grok-auth/grok-auth.ts
-ln -sfn ~/repos/mein/grok-auth/grok-auth.ts ~/.local/bin/grok-auth
-# ensure ~/.local/bin is on PATH
-grok-auth --help
+# npm
+npm i -g grok-auth
+npx grok-auth --help
+
+# pnpm
+pnpm add -g grok-auth
+pnpm dlx grok-auth --help
+
+# yarn
+yarn global add grok-auth
+# or one-shot without a global install:
+npx grok-auth --help
+
+# bun
+bun add -g grok-auth
+bunx grok-auth --help
+
+# Deno (needs FS access to ~/.grok)
+deno install -g -A npm:grok-auth
+# or: deno run -A npm:grok-auth --help
+```
+
+**Runtime dependency:** the official `grok` CLI must be on `PATH` for `add` / interactive login flows (`grok logout`, `grok login`). Profile list/switch/save/sync only need this package.
+
+### From source (contributors)
+
+```bash
+git clone https://github.com/KeiosStarqua/grok-auth.git
+cd grok-auth
+npm install
+npm run build
+node dist/grok-auth.js --help
+# optional: npm link  (or symlink dist/grok-auth.js onto PATH)
 ```
 
 ## Quick start

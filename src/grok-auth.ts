@@ -1,4 +1,4 @@
-#!/usr/bin/env bun
+#!/usr/bin/env node
 /**
  * grok-auth — switch between multiple Grok OIDC accounts
  *
