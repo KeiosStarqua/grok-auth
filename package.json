@@ -4,13 +4,13 @@
   "description": "Switch between multiple Grok CLI OIDC accounts when token usage runs out",
   "type": "module",
   "bin": {
-    "grok-auth": "./dist/grok-auth.js"
+    "grok-auth": "dist/grok-auth.js"
   },
   "files": [
     "dist"
   ],
   "scripts": {
-    "build": "tsc",
+    "build": "tsc && node -e \"require('fs').chmodSync('dist/grok-auth.js', 0o755)\"",
     "prepublishOnly": "npm run build",
     "start": "node dist/grok-auth.js",
     "typecheck": "tsc --noEmit"
