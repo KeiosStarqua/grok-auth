@@ -1,16 +1,17 @@
 {
   "name": "grok-auth",
   "version": "1.0.0",
-  "description": "Switch between multiple Grok CLI OIDC accounts when token usage runs out",
+  "description": "authstash: universal account switcher for AI coding-agent CLIs (Grok, Kiro, ...)",
   "type": "module",
   "bin": {
-    "grok-auth": "dist/grok-auth.js"
+    "grok-auth": "dist/grok-auth.js",
+    "authstash": "dist/authstash.js"
   },
   "files": [
     "dist"
   ],
   "scripts": {
-    "build": "tsc && node -e \"require('fs').chmodSync('dist/grok-auth.js', 0o755)\"",
+    "build": "tsc && node -e \"const fs=require('fs'); for (const f of ['dist/grok-auth.js','dist/authstash.js']) fs.chmodSync(f, 0o755)\"",
     "prepublishOnly": "npm run build",
     "start": "node dist/grok-auth.js",
     "typecheck": "tsc --noEmit"
@@ -19,11 +20,14 @@
     "node": ">=18"
   },
   "keywords": [
+    "authstash",
     "grok",
+    "kiro",
     "xai",
     "cli",
     "auth",
     "oidc",
+    "sso",
     "accounts",
     "profiles"
   ],
