@@ -108,7 +108,7 @@ Flag: `--json` for machine-readable output.
 | Tool | id | Live auth location | Automated `add` login? |
 |------|----|---------------------|-------------------------|
 | Grok CLI | `grok` | `~/.grok/auth.json` | yes, via `grok login` / `grok logout` |
-| Kiro CLI | `kiro` | `~/.aws/sso/cache/kiro-auth-token.json` + paired `<clientIdHash>.json` client registration | no — sign in manually, then run `save` |
+| Kiro CLI | `kiro` | `~/.local/share/kiro-cli/data.sqlite3` (tables `auth_kv` + auth rows of `state`; macOS: `~/Library/Application Support/kiro-cli/`) | no — sign in manually, then run `save` |
 
 ## How it works (Grok example)
 
@@ -122,11 +122,19 @@ Flag: `--json` for machine-readable output.
       personal.json
 ```
 
-Kiro follows the same pattern under `~/.kiro/accounts/`, but each
-profile snapshot bundles **two** files from `~/.aws/sso/cache/`: the
-token (`kiro-auth-token.json`) and its paired OAuth client registration
-(`<clientIdHash>.json`), since the token references the registration by
-hash and both must travel together.
+Kiro follows the same pattern under `~/.kiro/accounts/`. Kiro CLI keeps
+its session in SQLite (`~/.local/share/kiro-cli/data.sqlite3`), so each
+profile snapshots every `auth_kv` row (OIDC token + device registration)
+plus the identity rows of `state` (IdC start URL/region, CodeWhisperer
+profile ARN). The account email comes from `kiro-cli whoami`. Kiro
+support needs **Node.js ≥22.13** (built-in `node:sqlite`). Profiles
+saved by authstash 1.0.0 from `~/.aws/sso/cache` are legacy — Kiro no
+longer reads that file; sign in again and re-`save` them.
+
+If you log in to another account directly through `kiro-cli`, authstash
+detects that the live session no longer matches the active profile and
+will not overwrite that profile (`current` shows a warning, `sync`
+refuses).
 
 On every `use` / `next` / `add`, the **current** live session is written
 back into its profile first. That preserves silent token refreshes a

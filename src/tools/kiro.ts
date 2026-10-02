@@ -1,95 +1,104 @@
 /**
- * tools/kiro.ts — adapter for Kiro CLI's AWS SSO/OAuth session.
+ * tools/kiro.ts — adapter for Kiro CLI's auth session.
  *
- * Kiro does NOT store its session under ~/.kiro. It authenticates via
- * AWS SSO/OAuth and caches the session under ~/.aws/sso/cache/:
+ * Kiro CLI (verified on 2.22.x) keeps its session in a SQLite database,
+ * NOT in ~/.aws/sso/cache (that file layout is legacy and no longer read):
  *
- *   ~/.aws/sso/cache/kiro-auth-token.json   — accessToken, refreshToken,
- *                                              expiresAt, clientIdHash,
- *                                              authMethod, provider, region
- *   ~/.aws/sso/cache/<clientIdHash>.json    — OAuth client registration
- *                                              (clientId, clientSecret, expiresAt)
+ *   Linux: ~/.local/share/kiro-cli/data.sqlite3
+ *   macOS: ~/Library/Application Support/kiro-cli/data.sqlite3
  *
- * A profile snapshot bundles both files together (the token references
- * its client registration by clientIdHash, so both must travel as a pair).
+ *   table auth_kv (key, value):
+ *     kirocli:odic:token                — access/refresh token, expiry, region, start_url
+ *     kirocli:odic:device-registration  — OAuth client registration
+ *   table state (key, value):
+ *     auth.idc.start-url, auth.idc.region, api.codewhisperer.profile
  *
- * There is no supported non-interactive login/logout for Kiro, so this
- * adapter does not implement `login`/`logout`. Users authenticate via
- * the normal Kiro CLI sign-in flow, then run `authstash kiro save <name>`.
+ * A profile snapshot copies every auth_kv row plus the auth-related state
+ * rows, so switching restores the full identity (incl. the CodeWhisperer
+ * profile ARN). The account email is not stored in the DB; it is fetched
+ * best-effort via `kiro-cli whoami --format json` and kept as non-secret
+ * metadata so profiles can be told apart.
+ *
+ * There is no supported non-interactive login for Kiro, so this adapter
+ * exposes `manualLoginHint` instead of `login`/`logout`.
  */
 
-import { existsSync, readFileSync, writeFileSync, readdirSync, chmodSync, unlinkSync } from "fs";
+import { existsSync } from "fs";
 import { join } from "path";
-import { homedir } from "os";
-import type { AuthSnapshot, AuthSummary, ToolAdapter } from "../core.js";
+import { homedir, platform } from "os";
+import { createRequire } from "module";
+import { spawnSync } from "child_process";
+import { AuthstashError, type AuthSnapshot, type AuthSummary, type ToolAdapter } from "../core.js";
 
-const AWS_SSO_CACHE_DIR = process.env.AUTHSTASH_KIRO_SSO_CACHE_DIR || join(homedir(), ".aws", "sso", "cache");
-const TOKEN_PATH = join(AWS_SSO_CACHE_DIR, "kiro-auth-token.json");
-// authstash keeps its own profile store under ~/.kiro/accounts (config-only
-// directory; no secrets live there outside of what authstash itself writes).
+const SNAPSHOT_FORMAT = "kiro-cli-sqlite/1";
+
+function defaultDbPath(): string {
+  const base = platform() === "darwin"
+    ? join(homedir(), "Library", "Application Support")
+    : process.env.XDG_DATA_HOME || join(homedir(), ".local", "share");
+  return join(base, "kiro-cli", "data.sqlite3");
+}
+
+const KIRO_DB_PATH = process.env.AUTHSTASH_KIRO_DB || defaultDbPath();
 const KIRO_STATE_DIR = process.env.AUTHSTASH_KIRO_STATE_DIR || join(homedir(), ".kiro");
 
-interface KiroTokenFile {
-  accessToken?: string;
-  refreshToken?: string;
-  expiresAt?: string;
-  clientIdHash?: string;
-  authMethod?: string;
-  provider?: string;
-  region?: string;
-  [k: string]: unknown;
+/** `state` rows that belong to the signed-in identity. */
+function isAuthStateKey(key: string): boolean {
+  return key.startsWith("auth.") || key === "api.codewhisperer.profile";
 }
 
-interface KiroClientRegistration {
-  clientId?: string;
-  clientSecret?: string;
-  expiresAt?: string;
-  [k: string]: unknown;
-}
-
-/** Bundled snapshot: the token plus its paired client registration. */
 interface KiroSnapshot extends AuthSnapshot {
-  token: KiroTokenFile;
-  clientRegistration: KiroClientRegistration | null;
-  clientIdHash: string | null;
+  format: typeof SNAPSHOT_FORMAT;
+  auth_kv: Record<string, string>;
+  state: Record<string, string>;
+  email?: string;
 }
 
-function clientRegistrationPath(clientIdHash: string): string {
-  return join(AWS_SSO_CACHE_DIR, `${clientIdHash}.json`);
+/** Profiles saved by authstash ≤1.0.0 from ~/.aws/sso/cache. */
+function isLegacy(snap: AuthSnapshot | null | undefined): boolean {
+  return !!snap && snap.format !== SNAPSHOT_FORMAT && "token" in snap;
 }
 
-function readToken(): KiroTokenFile | null {
-  if (!existsSync(TOKEN_PATH)) return null;
+// ── sqlite access (node:sqlite, Node ≥22.13) ──────────────────────
+
+interface Stmt { all(...p: unknown[]): any[]; run(...p: unknown[]): unknown }
+interface Db { prepare(sql: string): Stmt; exec(sql: string): void; close(): void }
+
+function openDb(readOnly: boolean): Db {
+  let mod: { DatabaseSync: new (path: string, opts?: { readOnly?: boolean }) => Db };
   try {
-    return JSON.parse(readFileSync(TOKEN_PATH, "utf8")) as KiroTokenFile;
-  } catch (e) {
-    throw new Error(`cannot parse ${TOKEN_PATH}: ${e}`);
-  }
-}
-
-function readClientRegistration(clientIdHash: string | undefined | null): KiroClientRegistration | null {
-  if (!clientIdHash) return null;
-  const p = clientRegistrationPath(clientIdHash);
-  if (!existsSync(p)) return null;
-  try {
-    return JSON.parse(readFileSync(p, "utf8")) as KiroClientRegistration;
+    // Suppress node:sqlite's ExperimentalWarning so it doesn't pollute output.
+    const emit = process.emitWarning;
+    process.emitWarning = (() => {}) as typeof process.emitWarning;
+    try {
+      mod = createRequire(import.meta.url)("node:sqlite");
+    } finally {
+      process.emitWarning = emit;
+    }
   } catch {
-    return null;
+    throw new AuthstashError(
+      `Kiro support needs Node.js ≥22.13 (built-in node:sqlite); current: ${process.version}`,
+    );
   }
+  return new mod.DatabaseSync(KIRO_DB_PATH, { readOnly });
 }
 
-function writeJsonSecret(path: string, data: unknown): void {
-  const tmp = `${path}.tmp.${process.pid}`;
-  writeFileSync(tmp, JSON.stringify(data, null, 2) + "\n", { mode: 0o600 });
-  try { chmodSync(tmp, 0o600); } catch { /* ignore */ }
-  // rename is atomic on the same filesystem
-  try {
-    unlinkSync(path);
-  } catch { /* file may not exist yet */ }
-  writeFileSync(path, readFileSync(tmp));
-  unlinkSync(tmp);
-  try { chmodSync(path, 0o600); } catch { /* ignore */ }
+function parseJson(v: string | undefined): any {
+  if (!v) return undefined;
+  try { return JSON.parse(v); } catch { return undefined; }
 }
+
+/** Best-effort account email; never throws. */
+function fetchEmail(): string | undefined {
+  if (process.env.AUTHSTASH_KIRO_NO_WHOAMI) return undefined;
+  const r = spawnSync("kiro-cli", ["whoami", "--format", "json"], { encoding: "utf8", timeout: 20_000 });
+  if (r.status !== 0 || !r.stdout) return undefined;
+  const firstLine = r.stdout.split("\n").find((l) => l.trim().startsWith("{"));
+  const email = parseJson(firstLine)?.email;
+  return typeof email === "string" ? email : undefined;
+}
+
+// ── adapter ───────────────────────────────────────────────────────
 
 export const kiroTool: ToolAdapter = {
   id: "kiro",
@@ -97,34 +106,85 @@ export const kiroTool: ToolAdapter = {
   stateDir: KIRO_STATE_DIR,
 
   readLive(): AuthSnapshot | null {
-    const token = readToken();
-    if (!token) return null;
-    const clientRegistration = readClientRegistration(token.clientIdHash);
-    const snap: KiroSnapshot = {
-      token,
-      clientRegistration,
-      clientIdHash: token.clientIdHash ?? null,
-    };
-    return snap;
+    if (!existsSync(KIRO_DB_PATH)) return null;
+    const db = openDb(true);
+    try {
+      const auth_kv: Record<string, string> = {};
+      for (const r of db.prepare("SELECT key, value FROM auth_kv").all()) auth_kv[r.key] = r.value;
+      if (Object.keys(auth_kv).length === 0) return null;
+      const state: Record<string, string> = {};
+      for (const r of db.prepare("SELECT key, value FROM state").all()) {
+        if (isAuthStateKey(r.key)) state[r.key] = r.value;
+      }
+      const snap: KiroSnapshot = { format: SNAPSHOT_FORMAT, auth_kv, state };
+      const email = fetchEmail();
+      if (email) snap.email = email;
+      return snap;
+    } finally {
+      db.close();
+    }
   },
 
   writeLive(snapshot: AuthSnapshot): void {
+    if (isLegacy(snapshot)) {
+      throw new AuthstashError(
+        "this profile was saved in the legacy ~/.aws/sso/cache format, which Kiro CLI no longer reads.\n" +
+        "  Sign in to that account in Kiro CLI, then re-save it: authstash kiro save <name>",
+      );
+    }
     const snap = snapshot as KiroSnapshot;
-    if (!snap.token) throw new Error("profile is missing a Kiro token — cannot activate");
-    writeJsonSecret(TOKEN_PATH, snap.token);
-    if (snap.clientRegistration && snap.clientIdHash) {
-      writeJsonSecret(clientRegistrationPath(snap.clientIdHash), snap.clientRegistration);
+    if (snap.format !== SNAPSHOT_FORMAT || !snap.auth_kv) {
+      throw new AuthstashError("profile is not a valid Kiro snapshot — cannot activate");
+    }
+    if (!existsSync(KIRO_DB_PATH)) {
+      throw new AuthstashError(`Kiro CLI database not found at ${KIRO_DB_PATH} — run kiro-cli once first`);
+    }
+    const db = openDb(false);
+    try {
+      db.exec("BEGIN IMMEDIATE");
+      try {
+        db.prepare("DELETE FROM auth_kv").run();
+        const insAuth = db.prepare("INSERT INTO auth_kv (key, value) VALUES (?, ?)");
+        for (const [k, v] of Object.entries(snap.auth_kv)) insAuth.run(k, v);
+
+        const delState = db.prepare("DELETE FROM state WHERE key = ?");
+        for (const r of db.prepare("SELECT key FROM state").all()) {
+          if (isAuthStateKey(r.key)) delState.run(r.key);
+        }
+        const insState = db.prepare("INSERT INTO state (key, value) VALUES (?, ?)");
+        for (const [k, v] of Object.entries(snap.state ?? {})) insState.run(k, v);
+        db.exec("COMMIT");
+      } catch (e) {
+        db.exec("ROLLBACK");
+        throw e;
+      }
+    } finally {
+      db.close();
     }
   },
 
   summarize(snapshot: AuthSnapshot | null): AuthSummary {
-    const snap = snapshot as KiroSnapshot | null;
-    if (!snap || !snap.token) return { present: false };
-    const t = snap.token;
+    if (!snapshot) return { present: false };
+    if (isLegacy(snapshot)) {
+      const t = (snapshot as any).token ?? {};
+      return {
+        present: true,
+        label: `legacy ${t.provider ?? "Kiro"}${t.region ? ` (${t.region})` : ""} — re-save needed`,
+        legacy: true,
+        expires_at: t.expiresAt,
+      };
+    }
+    const snap = snapshot as KiroSnapshot;
+    const tok = parseJson(snap.auth_kv?.["kirocli:odic:token"]) ?? {};
+    const prof = parseJson(snap.state?.["api.codewhisperer.profile"]);
+    const startUrl: string | undefined = tok.start_url;
+    let host: string | undefined;
+    try { host = startUrl ? new URL(startUrl).host : undefined; } catch { /* ignore */ }
+
     let expired: boolean | undefined;
     let expires_in_s: number | null = null;
-    if (t.expiresAt) {
-      const exp = Date.parse(t.expiresAt);
+    if (tok.expires_at) {
+      const exp = Date.parse(tok.expires_at);
       if (!Number.isNaN(exp)) {
         expires_in_s = Math.floor((exp - Date.now()) / 1000);
         expired = expires_in_s <= 0;
@@ -132,42 +192,47 @@ export const kiroTool: ToolAdapter = {
     }
     return {
       present: true,
-      label: t.provider ? `${t.provider}${t.region ? ` (${t.region})` : ""}` : t.authMethod,
-      auth_method: t.authMethod,
-      provider: t.provider,
-      region: t.region,
-      expires_at: t.expiresAt,
+      label: snap.email ?? (host ? `${host}${tok.region ? ` (${tok.region})` : ""}` : "Kiro session"),
+      email: snap.email,
+      start_url: startUrl,
+      region: tok.region,
+      profile_name: prof?.profile_name,
+      // Access token is short-lived; Kiro refreshes it with the refresh token.
+      expires_at: tok.expires_at,
       expired,
       expires_in_s,
+      has_refresh_token: !!tok.refresh_token,
     };
   },
 
   defaultName(snapshot: AuthSnapshot): string {
     const snap = snapshot as KiroSnapshot;
-    const t = snap.token;
-    if (t?.provider) return t.provider.replace(/[^a-zA-Z0-9._+-]/g, "-");
-    if (t?.region) return t.region.replace(/[^a-zA-Z0-9._+-]/g, "-");
-    return "default";
+    const base = snap.email?.split("@")[0] ?? parseJson(snap.auth_kv?.["kirocli:odic:token"])?.region ?? "default";
+    return String(base).replace(/[^a-zA-Z0-9._+-]/g, "-");
   },
 
-  // No automated login/logout: Kiro's OAuth/SSO sign-in is interactive and
-  // browser-driven. `authstash kiro add <name>` will instruct the user to
-  // sign in manually, then snapshot the result.
+  sameAccount(live: AuthSnapshot, stored: AuthSnapshot): boolean {
+    if (isLegacy(stored) || isLegacy(live)) return false;
+    const a = (live as KiroSnapshot).email;
+    const b = (stored as KiroSnapshot).email;
+    // Without both emails we can't tell; fall back to start URL + region.
+    if (a && b) return a.toLowerCase() === b.toLowerCase();
+    const ta = parseJson((live as KiroSnapshot).auth_kv?.["kirocli:odic:token"]) ?? {};
+    const tb = parseJson((stored as KiroSnapshot).auth_kv?.["kirocli:odic:token"]) ?? {};
+    const same = ta.start_url === tb.start_url && ta.region === tb.region;
+    // whoami was unavailable: keep the known email so write-back doesn't drop it.
+    if (same && !a && b) (live as KiroSnapshot).email = b;
+    return same;
+  },
+
   manualLoginHint:
     "Kiro's sign-in is browser-based and cannot be automated.\n" +
-    "  1. Sign out / switch accounts in Kiro CLI's own login flow.\n" +
-    "  2. Complete sign-in for the new account.\n" +
-    "  3. Run: authstash kiro save <name>",
+    "  1. kiro-cli logout && kiro-cli login   (sign in as the new account)\n" +
+    "  2. Run: authstash kiro save <name>",
 
   warnings(): string[] {
     return [];
   },
 };
 
-export { TOKEN_PATH as KIRO_TOKEN_PATH, AWS_SSO_CACHE_DIR as KIRO_SSO_CACHE_DIR };
-
-/** Discover orphaned/legacy client-registration cache files (diagnostics only). */
-export function listSsoClientRegistrations(): string[] {
-  if (!existsSync(AWS_SSO_CACHE_DIR)) return [];
-  return readdirSync(AWS_SSO_CACHE_DIR).filter((f) => f.endsWith(".json") && f !== "kiro-auth-token.json");
-}
+export { KIRO_DB_PATH };

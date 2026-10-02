@@ -148,9 +148,9 @@ function runList(t: ToolAdapter) {
 }
 
 function runCurrent(t: ToolAdapter) {
-  const { active, live, profile } = currentProfile(t);
+  const { active, live, profile, matches_active } = currentProfile(t);
   if (jsonOut) {
-    ok({ active, live, profile });
+    ok({ active, live, profile, matches_active });
     return;
   }
   if (!live.present) {
@@ -159,7 +159,8 @@ function runCurrent(t: ToolAdapter) {
     return;
   }
   console.log(`tool:     ${t.displayName}`);
-  console.log(`profile:  ${active ?? "(unsaved)"}`);
+  const mismatch = matches_active === false ? "  ⚠ live session is a DIFFERENT account (unsaved)" : "";
+  console.log(`profile:  ${active ?? "(unsaved)"}${mismatch}`);
   console.log(`label:    ${live.label ?? "-"}`);
   console.log(`expires:  ${formatExpiry(live.expires_at as string | undefined)} (${live.expires_at ?? "-"})`);
   printWarnings(t);

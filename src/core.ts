@@ -71,6 +71,12 @@ export interface ToolAdapter {
   manualLoginHint?: string;
   /** Optional: extra warnings to print (e.g. env var overrides). */
   warnings?(): string[];
+  /**
+   * Optional: true if `live` and `stored` are the same account. Used to avoid
+   * writing a different account's live session over the active profile
+   * (e.g. after the user re-logged in through the tool itself).
+   */
+  sameAccount?(live: AuthSnapshot, stored: AuthSnapshot): boolean;
 }
 
 // ── path helpers ───────────────────────────────────────────────────
@@ -176,8 +182,28 @@ export function syncActiveIfAny(t: ToolAdapter): void {
   if (!meta.active) return;
   const snap = t.readLive();
   if (!snap) return;
-  if (!meta.profiles[meta.active] && !existsSync(profilePath(t, meta.active))) return;
+  const path = profilePath(t, meta.active);
+  if (!meta.profiles[meta.active] && !existsSync(path)) return;
+  if (t.sameAccount && existsSync(path)) {
+    const stored = JSON.parse(readFileSync(path, "utf8")) as AuthSnapshot;
+    if (!t.sameAccount(snap, stored)) {
+      const label = t.summarize(snap).label ?? "unknown";
+      console.error(
+        `warning: live ${t.displayName} session (${label}) is not profile '${meta.active}' — ` +
+        `not overwriting it. Run 'save <name>' first if you want to keep this session.`,
+      );
+      return;
+    }
+  }
   syncToProfile(t, meta.active, snap);
+}
+
+/** null if unknown; false if the live session belongs to a different account than the active profile. */
+export function liveMatchesActive(t: ToolAdapter, snap: AuthSnapshot | null, active: string | null): boolean | null {
+  if (!t.sameAccount || !snap || !active) return null;
+  const path = profilePath(t, active);
+  if (!existsSync(path)) return null;
+  return t.sameAccount(snap, JSON.parse(readFileSync(path, "utf8")) as AuthSnapshot);
 }
 
 // ── commands (tool-agnostic) ───────────────────────────────────────
@@ -218,10 +244,16 @@ export function listProfiles(t: ToolAdapter): { active: string | null; live: Aut
   return { active: meta.active, live, rows };
 }
 
-export function currentProfile(t: ToolAdapter): { active: string | null; live: AuthSummary; profile: ProfileMeta | null } {
+export function currentProfile(t: ToolAdapter): { active: string | null; live: AuthSummary; profile: ProfileMeta | null; matches_active: boolean | null } {
   const meta = loadMeta(t);
-  const live = t.summarize(t.readLive());
-  return { active: meta.active, live, profile: meta.active ? meta.profiles[meta.active] ?? null : null };
+  const snap = t.readLive();
+  const live = t.summarize(snap);
+  return {
+    active: meta.active,
+    live,
+    profile: meta.active ? meta.profiles[meta.active] ?? null : null,
+    matches_active: liveMatchesActive(t, snap, meta.active),
+  };
 }
 
 export function saveProfile(t: ToolAdapter, nameArg?: string): { name: string; summary: AuthSummary } {
@@ -307,7 +339,14 @@ export function syncProfile(t: ToolAdapter): { name: string; summary: AuthSummar
     saveMeta(t, m);
     return { name, summary: t.summarize(snap) };
   }
-  const snap = syncToProfile(t, meta.active);
+  const live = t.readLive();
+  if (liveMatchesActive(t, live, meta.active) === false) {
+    throw new AuthstashError(
+      `live session (${t.summarize(live).label ?? "unknown"}) is a different account than active profile '${meta.active}'. ` +
+      `Use 'save <name>' to store it as a new profile.`,
+    );
+  }
+  const snap = syncToProfile(t, meta.active, live);
   return { name: meta.active, summary: t.summarize(snap) };
 }
 

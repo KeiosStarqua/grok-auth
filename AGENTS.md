@@ -41,13 +41,15 @@ and JSON/human output are already shared.
 | Tool | id | Live auth location | Automated login? |
 |------|----|---------------------|-------------------|
 | Grok CLI | `grok` | `~/.grok/auth.json` | yes, via `grok login` / `grok logout` |
-| Kiro CLI | `kiro` | `~/.aws/sso/cache/kiro-auth-token.json` + its paired `<clientIdHash>.json` client registration | no — Kiro's OAuth/SSO sign-in is browser-driven; `add` prints manual sign-in instructions, then the user runs `save` |
+| Kiro CLI | `kiro` | `~/.local/share/kiro-cli/data.sqlite3` (tables `auth_kv` + auth rows of `state`; macOS: `~/Library/Application Support/kiro-cli/`) | no — Kiro's OAuth/SSO sign-in is browser-driven; `add` prints manual sign-in instructions, then the user runs `save` |
 
-Kiro does **not** store auth under `~/.kiro` — that directory only
-holds config, agents, skills, sessions, and logs. The actual OIDC/SSO
-session lives under `~/.aws/sso/cache/`, so the Kiro adapter snapshots
-both files there as a pair (the token references its client
-registration by `clientIdHash`, so they must travel together).
+Kiro does **not** store auth under `~/.kiro`, and (as of kiro-cli 2.22)
+no longer reads `~/.aws/sso/cache/kiro-auth-token.json` either. The
+session lives in SQLite at `~/.local/share/kiro-cli/data.sqlite3`
+(`auth_kv`: `kirocli:odic:token`, `kirocli:odic:device-registration`;
+`state`: `auth.idc.*`, `api.codewhisperer.profile`). The adapter uses
+`node:sqlite` (Node ≥22.13) and a `sameAccount` check so a session the
+user switched to inside Kiro is never written over another profile.
 
 ## Ground rules for contributors (human or agent)
 
